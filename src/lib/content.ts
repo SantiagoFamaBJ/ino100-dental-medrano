@@ -119,7 +119,7 @@ export const defaultContent: Content = {
     retailUrl: "https://dentalmedrano.com",
     seoTitle: "Escáner intraoral INO100+ | Dental Medrano",
     seoDescription:
-      "Escáner intraoral INO100+ de BLZ Dental: arcada completa en 30 segundos, precisión menor a 20 µm, color real, tres puntas e inteligencia artificial. Consultá en Dental Medrano.",
+      "Arcada completa en 30 segundos, color real e IA. Conocé el INO100+ y consultá por WhatsApp.",
     ogImage: "/img/og.jpg",
   },
   hero: {

@@ -18,9 +18,15 @@ export async function generateMetadata(): Promise<Metadata> {
     openGraph: {
       title: c.site.seoTitle,
       description: c.site.seoDescription,
-      images: c.site.ogImage ? [c.site.ogImage] : undefined,
+      images: c.site.ogImage ? [{ url: c.site.ogImage, width: 1200, height: 630, alt: "Escáner intraoral INO100+ | Dental Medrano" }] : undefined,
       type: "website",
       locale: "es_AR",
+    },
+    twitter: {
+      card: "summary_large_image",
+      title: c.site.seoTitle,
+      description: c.site.seoDescription,
+      images: c.site.ogImage ? [c.site.ogImage] : undefined,
     },
   };
 }
