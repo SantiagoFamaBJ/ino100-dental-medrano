@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Session } from "@supabase/supabase-js";
 import { ArrowDown, ArrowUp, ExternalLink, LogOut, Plus, RotateCcw, Save, Trash2, Upload } from "lucide-react";
 import { supabase, BUCKET } from "@/lib/supabase";
 import { defaultContent, mergeContent, type Content } from "@/lib/content";
@@ -12,6 +11,19 @@ const inputCls =
   "w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-[0.95rem] text-slate-900 outline-none focus:border-[#083e67] focus:ring-2 focus:ring-[#6aaab4]/40";
 const btnCls =
   "inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50";
+
+/* ---------- Acceso: solo contraseña (clave única de admins DM) ---------- */
+
+const PASS_KEY = "dm_admin_pass";
+function getPass() {
+  try { return sessionStorage.getItem(PASS_KEY) || ""; } catch { return ""; }
+}
+async function adminCall(body: Record<string, unknown>) {
+  if (!supabase) return { ok: false, error: "Supabase no configurado" } as any;
+  const { data, error } = await supabase.functions.invoke("ino-admin", { body: { password: getPass(), ...body } });
+  if (error) return { ok: false, error: (await (error as any).context?.json?.().catch(() => null))?.error || error.message };
+  return data;
+}
 
 /* ---------- Subida de archivos a Supabase Storage ---------- */
 
@@ -33,7 +45,10 @@ function UploadButton({ accept, label, onDone, onError }: { accept: string; labe
     if (!file || !supabase) return;
     setBusy(true);
     const path = `${new Date().getFullYear()}/${Date.now()}-${safeName(file.name)}`;
-    const { error } = await supabase.storage.from(BUCKET).upload(path, file, { cacheControl: "31536000", upsert: false, contentType: file.type });
+    const signed = await adminCall({ action: "sign-upload", path });
+    const { error } = signed?.ok
+      ? await supabase.storage.from(BUCKET).uploadToSignedUrl(signed.path, signed.token, file, { cacheControl: "31536000", contentType: file.type })
+      : { error: new Error(signed?.error || "No autorizado") };
     if (error) {
       onError(
         /exceeded|too large|size/i.test(error.message)
@@ -355,16 +370,14 @@ function VideoGroupsEditor({ label, hint, value, onChange, onError }: { label: s
 /* ---------- App ---------- */
 
 export default function AdminApp() {
-  const [session, setSession] = useState<Session | null>(null);
+  const [session, setSession] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
-  const [allowed, setAllowed] = useState<boolean | null>(null);
   const [content, setContent] = useState<Content>(defaultContent);
   const [sectionId, setSectionId] = useState(SECTIONS[0].id);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<{ type: "ok" | "err"; text: string } | null>(null);
 
-  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loginErr, setLoginErr] = useState("");
   const [loggingIn, setLoggingIn] = useState(false);
@@ -374,18 +387,12 @@ export default function AdminApp() {
       setReady(true);
       return;
     }
-    supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session);
-      setReady(true);
-    });
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
-    return () => sub.subscription.unsubscribe();
+    setSession(getPass() || null);
+    setReady(true);
   }, []);
 
   const load = useCallback(async () => {
     if (!supabase) return;
-    const { data: ok } = await supabase.rpc("ino_is_admin");
-    setAllowed(ok === true);
     const { data } = await supabase.from("ino_content").select("data").eq("id", "main").maybeSingle();
     setContent(mergeContent(defaultContent, data?.data ?? {}));
     setDirty(false);
@@ -393,7 +400,6 @@ export default function AdminApp() {
 
   useEffect(() => {
     if (session) load();
-    else setAllowed(null);
   }, [session, load]);
 
   useEffect(() => {
@@ -409,8 +415,14 @@ export default function AdminApp() {
     if (!supabase) return;
     setLoggingIn(true);
     setLoginErr("");
-    const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
-    if (error) setLoginErr("El email o la contraseña no son correctos.");
+    try { sessionStorage.setItem(PASS_KEY, password.trim()); } catch {}
+    const r = await adminCall({ action: "check" });
+    if (r?.ok) {
+      setSession(password.trim());
+    } else {
+      try { sessionStorage.removeItem(PASS_KEY); } catch {}
+      setLoginErr("La contraseña no es correcta.");
+    }
     setLoggingIn(false);
   }
 
@@ -418,14 +430,14 @@ export default function AdminApp() {
     if (!supabase || !session) return;
     setSaving(true);
     setMsg(null);
-    const { error } = await supabase.from("ino_content").upsert({ id: "main", data: content, updated_at: new Date().toISOString() });
-    if (error) {
-      setMsg({ type: "err", text: `No se pudo guardar: ${error.message}` });
+    const r = await adminCall({ action: "save", data: content });
+    if (!r?.ok) {
+      setMsg({ type: "err", text: `No se pudo guardar: ${r?.error || "error desconocido"}` });
     } else {
       setDirty(false);
       let live = true;
       try {
-        const r = await fetch("/api/revalidate", { method: "POST", headers: { Authorization: `Bearer ${session.access_token}` } });
+        const r = await fetch("/api/revalidate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password: getPass() }) });
         live = r.ok;
       } catch {
         live = false;
@@ -470,15 +482,11 @@ export default function AdminApp() {
       <div className="grid min-h-screen place-items-center bg-slate-100 p-4">
         <form onSubmit={login} className={box}>
           <h1 className="text-xl font-bold text-slate-900">Administrar página INO100+</h1>
-          <p className="mt-1 text-sm text-slate-600">Ingresá con tu usuario.</p>
+          <p className="mt-1 text-sm text-slate-600">Ingresá la contraseña.</p>
           <div className="mt-5 space-y-4">
             <div>
-              <label className="mb-1.5 block text-sm font-semibold text-slate-800">Email</label>
-              <input className={inputCls} type="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} required />
-            </div>
-            <div>
               <label className="mb-1.5 block text-sm font-semibold text-slate-800">Contraseña</label>
-              <input className={inputCls} type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+              <input className={inputCls} type="password" autoComplete="current-password" autoFocus value={password} onChange={(e) => setPassword(e.target.value)} required />
             </div>
             {loginErr && <p className="text-sm font-medium text-red-700">{loginErr}</p>}
             <button type="submit" disabled={loggingIn} className="w-full rounded-lg bg-[#083e67] px-4 py-3 font-semibold text-white hover:bg-[#052b49] disabled:opacity-60">
@@ -486,21 +494,6 @@ export default function AdminApp() {
             </button>
           </div>
         </form>
-      </div>
-    );
-
-  if (allowed === false)
-    return (
-      <div className="grid min-h-screen place-items-center bg-slate-100 p-4">
-        <div className={box}>
-          <h1 className="text-xl font-bold text-slate-900">Sin permiso para editar</h1>
-          <p className="mt-3 text-sm text-slate-600">
-            Este usuario ({session.user.email}) no está autorizado. Agregalo a la tabla ino_admins en Supabase.
-          </p>
-          <button className={btnCls + " mt-5"} onClick={() => supabase!.auth.signOut()}>
-            <LogOut size={16} /> Cerrar sesión
-          </button>
-        </div>
       </div>
     );
 
@@ -512,14 +505,13 @@ export default function AdminApp() {
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-3">
           <div>
             <h1 className="text-base font-bold">Administrar página INO100+</h1>
-            <p className="text-xs text-slate-500">{session.user.email}</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {dirty && <span className="text-xs font-semibold text-amber-700">Cambios sin guardar</span>}
             <a href="/" target="_blank" rel="noopener" className={btnCls}>
               <ExternalLink size={16} /> Ver sitio
             </a>
-            <button className={btnCls} onClick={() => supabase!.auth.signOut()}>
+            <button className={btnCls} onClick={() => { try { sessionStorage.removeItem(PASS_KEY); } catch {} setSession(null); setPassword(""); }}>
               <LogOut size={16} /> Salir
             </button>
             <button

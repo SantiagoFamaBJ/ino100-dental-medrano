@@ -1,5 +1,5 @@
 // Contenido por defecto del sitio INO100+.
-// Todo esto se puede editar desde /admin. Lo que se guarda en Supabase pisa estos valores.
+// Todo esto se puede editar desde /ADMIN. Lo que se guarda en Supabase pisa estos valores.
 
 export type WhatsApp = { label: string; number: string; display: string; message: string };
 export type Pair = { label: string; value: string };
